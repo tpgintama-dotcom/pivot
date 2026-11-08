@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Pivot</title>
 <!-- Pivot の入口。Google の外に置いたこのページの中で Pivot（Apps Script）を開く。
      中の Google のページにはこの端末の Google ログインが届かないので、ログインしたままのブラウザでも開ける。
@@ -17,6 +17,8 @@
 <meta name="theme-color" content="#FBE7E1">
 <style>
   html, body { margin: 0; height: 100%; background: #FBE7E1; }
+  /* 拡大できないようにする（ダブルタップで拡大しない・文字を勝手に大きくしない） */
+  html { touch-action: manipulation; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   iframe { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
   .wait { position: fixed; inset: 0; display: grid; place-items: center; font: 600 15px/1.6 system-ui, sans-serif; color: #5E9E86; }
 </style>
@@ -26,7 +28,7 @@
 <script>
 // 公開している Pivot（Apps Script）の URL
 const APP = "https://script.google.com/macros/s/AKfycbyulcJHv9hNRmHVooER51Bk0N5sYTL_-KQ6QkFndalTs9HCGNTplMavNr86ESxKSICH/exec";
-// この端末の鍵：URL の ?k= か、前に保存したもの。あれば中の Pivot に渡すので合言葉が要らない
+// この端末の鍵：URL の ?k= か、前に保存したもの。あれば中の Pivot に渡すのでパスワードが要らない
 const get = k => { try { return localStorage.getItem(k); } catch { return null; } };
 const set = (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch {} };
 const fromUrl = new URLSearchParams(location.search).get("k");
@@ -39,6 +41,10 @@ f.allow = "clipboard-write";
 f.src = APP + (key ? "?k=" + encodeURIComponent(key) : "");
 f.onload = () => document.getElementById("wait").remove();
 document.body.append(f);
+
+// 拡大できないようにする（iPhone は user-scalable=no を無視するので、ピンチをここでも止める）
+["gesturestart", "gesturechange", "gestureend"].forEach(t => document.addEventListener(t, ev => ev.preventDefault(), { passive: false }));
+document.addEventListener("touchmove", ev => { if (ev.touches.length > 1 && ev.cancelable) ev.preventDefault(); }, { passive: false });
 
 // 中の Pivot が「新しい鍵ができた／ログアウトした」と知らせてきたら覚え直す
 addEventListener("message", ev => {
