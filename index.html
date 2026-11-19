@@ -20,6 +20,14 @@
   /* 拡大できないようにする（ダブルタップで拡大しない・文字を勝手に大きくしない） */
   html { touch-action: manipulation; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   iframe { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
+  /* 通知の許可（中の Pivot から頼まれたときだけ出す。iPhone では、このページで押さないと許可の画面が出ない） */
+  .ask { position: fixed; left: 12px; right: 12px; top: calc(env(safe-area-inset-top, 0px) + 12px); z-index: 10; background: #fff; color: #333;
+    border-radius: 18px; padding: 16px; box-shadow: 0 8px 30px rgba(0,0,0,.25); font: 15px/1.6 system-ui, sans-serif; display: flex; flex-direction: column; gap: 12px; max-width: 480px; margin: 0 auto; }
+  .ask[hidden] { display: none; }
+  .ask .row { display: flex; gap: 10px; justify-content: flex-end; }
+  .ask button { font: 600 15px system-ui, sans-serif; border: 0; border-radius: 12px; padding: 10px 16px; cursor: pointer; }
+  .ask .yes { background: #5E9E86; color: #fff; }
+  .ask .no { background: #eee; color: #333; }
   .wait { position: fixed; inset: 0; display: grid; place-items: center; font: 600 15px/1.6 system-ui, sans-serif; color: #5E9E86; }
 </style>
 <script>
@@ -37,6 +45,10 @@
 </head>
 <body>
 <div class="wait" id="wait">Pivot を開いています…</div>
+<div class="ask" id="ask" hidden role="dialog" aria-label="通知を受け取る">
+  <div><b>Pivot の通知を受け取りますか？</b><br>ゴミの日・依頼箱の返事・経費のチェックをお知らせします。下のボタンを押して、次に出る画面で「許可」を選んでください。</div>
+  <div class="row"><button type="button" class="no" id="askNo">やめる</button><button type="button" class="yes" id="askYes">通知を受け取る</button></div>
+</div>
 <script>
 // 公開している Pivot（Apps Script）の URL
 const APP = "https://script.google.com/macros/s/AKfycbyulcJHv9hNRmHVooER51Bk0N5sYTL_-KQ6QkFndalTs9HCGNTplMavNr86ESxKSICH/exec";
@@ -58,10 +70,62 @@ document.body.append(f);
 ["gesturestart", "gesturechange", "gestureend"].forEach(t => document.addEventListener(t, ev => ev.preventDefault(), { passive: false }));
 document.addEventListener("touchmove", ev => { if (ev.touches.length > 1 && ev.cancelable) ev.preventDefault(); }, { passive: false });
 
+// ---- 通知（Web Push）。サービスワーカー（sw.js）はこのフォルダに置く ----
+// 許可と購読はこのページ（いちばん外）でしかできないので、中の Pivot に頼まれたらここでボタンを出す
+const pushOk = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+let swReg = null;
+const swReady = pushOk ? navigator.serviceWorker.register("sw.js").then(() => navigator.serviceWorker.ready).then(r => (swReg = r)).catch(() => null) : Promise.resolve(null);
+const standalone = (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const fromB64u = s => { s = s.replace(/-/g, "+").replace(/_/g, "/"); const b = atob(s + "===".slice((s.length + 3) % 4)); return Uint8Array.from(b, c => c.charCodeAt(0)); };
+const toB64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const hashOf = async ep => toB64u(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(ep)));
+const sameKey = (sub, key) => { try { const a = new Uint8Array(sub.options.applicationServerKey), b = fromB64u(key); return a.length === b.length && a.every((x, i) => x === b[i]); } catch { return false; } };
+async function pushState() {
+  const st = { supported: pushOk, standalone, ios: isIOS, permission: pushOk ? Notification.permission : "unsupported", sub: null, hash: "" };
+  if (pushOk) {
+    const reg = await swReady, sub = reg && await reg.pushManager.getSubscription();
+    if (sub) { st.sub = sub.toJSON(); st.hash = await hashOf(sub.endpoint); }
+  }
+  return st;
+}
+async function onPush(src, origin, d) {
+  const reply = o => { try { src.postMessage(Object.assign({ pivotPushReply: 1, rid: d.rid }, o), origin); } catch {} };
+  if (d.pivotPush === "state") return reply({ state: await pushState() });
+  if (d.pivotPush === "off") {
+    let hash = "";
+    try { const reg = await swReady, sub = reg && await reg.pushManager.getSubscription(); if (sub) { hash = await hashOf(sub.endpoint); await sub.unsubscribe(); } } catch {}
+    return reply({ hash });
+  }
+  if (d.pivotPush !== "ask" || !/^[A-Za-z0-9_-]{80,100}$/.test(String(d.key || ""))) return;
+  if (!pushOk) return reply({ error: "unsupported" });
+  const reg = await swReady;
+  if (!reg) return reply({ error: "サービスワーカーを準備できませんでした" });
+  const old = await reg.pushManager.getSubscription();
+  const box = document.getElementById("ask");
+  const done = async (p, isNew) => {
+    try {
+      const sub = await p;
+      reply({ sub: sub.toJSON(), hash: await hashOf(sub.endpoint), isNew });
+    } catch (e) { reply({ error: Notification.permission === "denied" ? "denied" : String((e && e.message) || e) }); }
+  };
+  document.getElementById("askNo").onclick = () => { box.hidden = true; reply({ cancel: true }); };
+  document.getElementById("askYes").onclick = () => {
+    box.hidden = true;
+    const opt = { userVisibleOnly: true, applicationServerKey: fromB64u(d.key) };
+    if (old && sameKey(old, d.key)) return done(Promise.resolve(old), false);
+    // 押したその場で subscribe を呼ぶ（許可の画面もここで出る。iPhone は押した直後でないと出せない）
+    if (!old) return done(reg.pushManager.subscribe(opt), true);
+    done(old.unsubscribe().then(() => reg.pushManager.subscribe(opt)), true);  // 鍵が変わっていたら作り直す
+  };
+  box.hidden = false;
+}
+
 // 中の Pivot が「新しい鍵ができた／ログアウトした」「色が変わった」と知らせてきたら覚え直す
 addEventListener("message", ev => {
   if (!/^https:\/\/[a-z0-9-]+-script\.googleusercontent\.com$/.test(ev.origin)) return;
   const d = ev.data || {};
+  if (d.pivotPush) { onPush(ev.source, ev.origin, d); return; }
   if (d.pivotKey !== undefined) set("pivot_key", d.pivotKey || null);
   if (typeof d.pivotColors === "string" && /^#[0-9a-fA-F]{6},#[0-9a-fA-F]{6}$/.test(d.pivotColors)) set("pivot_colors", d.pivotColors);
 });
