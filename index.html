@@ -55,8 +55,12 @@ const APP = "https://script.google.com/macros/s/AKfycbyulcJHv9hNRmHVooER51Bk0N5s
 // この端末の鍵：URL の ?k= か、前に保存したもの。あれば中の Pivot に渡すのでパスワードが要らない
 const get = k => { try { return localStorage.getItem(k); } catch { return null; } };
 const set = (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch {} };
-const fromUrl = new URLSearchParams(location.search).get("k");
-if (fromUrl) { set("pivot_key", fromUrl); history.replaceState(null, "", location.pathname); }
+const qs = new URLSearchParams(location.search), fromUrl = qs.get("k");
+// 通知を押して開いたとき（?open=kc-…）：中の Pivot の用意ができたら、それを開いてもらう
+const OPEN_RE = /^[a-z]{2,8}-[A-Za-z0-9_]{1,40}$/;
+let openNext = OPEN_RE.test(qs.get("open") || "") ? qs.get("open") : "";
+if (fromUrl) set("pivot_key", fromUrl);
+if (fromUrl || qs.has("open")) history.replaceState(null, "", location.pathname);
 const key = fromUrl || get("pivot_key");
 
 const f = document.createElement("iframe");
@@ -121,10 +125,21 @@ async function onPush(src, origin, d) {
   box.hidden = false;
 }
 
+// 通知を押したとき、もう開いていた Pivot には、サービスワーカーが「これを開いて」と知らせてくる
+// 中の Pivot（最後に話しかけてきた枠）に渡す。まだ用意ができていなければ、聞かれたときに渡す
+let app = null;
+const sendOpen = () => { if (openNext && app) { try { app.win.postMessage({ pivotOpen: openNext }, app.origin); openNext = ""; } catch {} } };
+if (pushOk) navigator.serviceWorker.addEventListener("message", ev => {
+  const v = ev.data && ev.data.pivotOpen;
+  if (typeof v === "string" && OPEN_RE.test(v)) { openNext = v; sendOpen(); }
+});
 // 中の Pivot が「新しい鍵ができた／ログアウトした」「色が変わった」と知らせてきたら覚え直す
 addEventListener("message", ev => {
   if (!/^https:\/\/[a-z0-9-]+-script\.googleusercontent\.com$/.test(ev.origin)) return;
   const d = ev.data || {};
+  if (ev.source) app = { win: ev.source, origin: ev.origin };
+  // 中の Pivot が開き終わって「開くものはある？」と聞いてきた
+  if (d.pivotOpen === "get") { try { ev.source.postMessage({ pivotPushReply: 1, rid: d.rid, open: openNext }, ev.origin); } catch {} openNext = ""; return; }
   if (d.pivotPush) { onPush(ev.source, ev.origin, d); return; }
   if (d.pivotKey !== undefined) set("pivot_key", d.pivotKey || null);
   if (typeof d.pivotColors === "string" && /^#[0-9a-fA-F]{6},#[0-9a-fA-F]{6}$/.test(d.pivotColors)) set("pivot_colors", d.pivotColors);

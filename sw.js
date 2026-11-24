@@ -29,12 +29,18 @@ self.addEventListener("push", e => {
   })());
 });
 // 通知を押したら、開いている Pivot を前に出す（なければ開く）
+// 通知に開く先（url。例 "kc-k123"＝経費のチェック）があれば、入口のページに伝えて、中の Pivot でそれを開く（v43〜）
 self.addEventListener("notificationclick", e => {
   e.notification.close();
+  const open = String((e.notification.data && e.notification.data.url) || "");
+  const want = /^[a-z]{2,8}-[A-Za-z0-9_]{1,40}$/.test(open) ? open : "";
   e.waitUntil((async () => {
     const url = self.registration.scope;
     const list = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-    for (const c of list) if (c.url.indexOf(url) === 0 && "focus" in c) return c.focus();
-    return self.clients.openWindow(url);
+    for (const c of list) if (c.url.indexOf(url) === 0 && "focus" in c) {
+      if (want) try { c.postMessage({ pivotOpen: want }); } catch (err) {}
+      return c.focus();
+    }
+    return self.clients.openWindow(url + (want ? "?open=" + encodeURIComponent(want) : ""));
   })());
 });
