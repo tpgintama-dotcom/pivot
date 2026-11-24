@@ -1,5 +1,5 @@
 // Pivot のサービスワーカー（通知だけ。ページの読み込みにはさわらない）
-// サーバーは中身なしの push を送ってくるので、届いたら Pivot（Apps Script）から通知文を取ってきて出す。
+// サーバーは通知文を暗号化して push に入れて送ってくる（v41〜）。中身が無いときだけ Pivot（Apps Script）から通知文を取ってきて出す。
 // Safari は push のたびに必ず通知を出さないといけないので、取れなかったときも何か出す
 const APP = "https://script.google.com/macros/s/AKfycbyulcJHv9hNRmHVooER51Bk0N5sYTL_-KQ6QkFndalTs9HCGNTplMavNr86ESxKSICH/exec";
 self.addEventListener("install", () => self.skipWaiting());
@@ -13,14 +13,21 @@ async function pull() {
   const j = await r.json();
   return Array.isArray(j.items) ? j.items : [];
 }
-self.addEventListener("push", e => e.waitUntil((async () => {
+// 通知文は push の中に入っている（サーバーが暗号化して入れ、ブラウザがほどいて e.data に入れる）ので、まずそれをすぐ出す。
+// iPhone は Pivot を閉じているとき、push のあとで通信していると、通知を出す前に止められることがあった（v41 で中身つきに変えた）
+// 中身が無い push（古い送り方・暗号化できなかったとき）だけ、今までどおり Pivot に通知文を取りに行く
+self.addEventListener("push", e => {
   let items = [];
-  try { items = await Promise.race([pull(), new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 25000))]); } catch (err) {}
-  if (!items.length) items = [{ title: "Pivot", body: "お知らせがあります。Pivot を開いて確かめてください。", tag: "pivot" }];
-  for (const n of items.slice(0, 5)) {
-    await self.registration.showNotification(String(n.title || "Pivot"), { body: String(n.body || ""), tag: String(n.tag || "pivot"), icon: "icon-192.png", badge: "icon-192.png", data: { url: n.url || "" } });
-  }
-})()));
+  try { const j = e.data ? e.data.json() : null; if (j && (j.title || j.body)) items = [j]; } catch (err) {}
+  const show = list => Promise.all(list.slice(0, 5).map(n => self.registration.showNotification(String(n.title || "Pivot"),
+    { body: String(n.body || ""), tag: String(n.tag || "pivot"), icon: "icon-192.png", badge: "icon-192.png", data: { url: n.url || "" } })));
+  if (items.length) { e.waitUntil(show(items)); return; }
+  e.waitUntil((async () => {
+    try { items = await Promise.race([pull(), new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 20000))]); } catch (err) {}
+    if (!items.length) items = [{ title: "Pivot", body: "お知らせがあります。Pivot を開いて確かめてください。", tag: "pivot" }];
+    await show(items);
+  })());
+});
 // 通知を押したら、開いている Pivot を前に出す（なければ開く）
 self.addEventListener("notificationclick", e => {
   e.notification.close();
